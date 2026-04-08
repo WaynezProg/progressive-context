@@ -1,0 +1,88 @@
+{
+  "id": "progressive-context",
+  "name": "Progressive Context Injector",
+  "version": "2.0.0",
+  "description": "Configuration-driven progressive context injection for OpenClaw agents. Injects full shared context on the first turn and a compact reminder on subsequent turns. Registers a workspace_context tool for on-demand file access.",
+  "entry": "./index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "sharedDir": {
+        "type": "string",
+        "description": "Directory containing shared context files, relative to workspace root. Defaults to 'agents' if it exists, otherwise workspace root."
+      },
+      "globalFiles": {
+        "type": "object",
+        "description": "Map of file IDs to filenames for global (non-agent-specific) reference files, relative to sharedDir.",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "agentFiles": {
+        "type": "object",
+        "description": "Map of file IDs to filenames for per-agent reference files. Resolved as sharedDir/{agentId}/{filename}, falling back to workspace root.",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "compactReminder": {
+        "type": "string",
+        "description": "Inline compact reminder text injected on turn 2+. Mutually exclusive with compactReminderFile."
+      },
+      "compactReminderFile": {
+        "type": "string",
+        "description": "Path to a file containing the compact reminder text, relative to workspace root."
+      },
+      "contextRoutingIndex": {
+        "type": "string",
+        "description": "Inline context/tool routing index text. Injected on first turn for agents with injectRoutingIndex: true."
+      },
+      "contextRoutingIndexFile": {
+        "type": "string",
+        "description": "Path to a file containing the routing index, relative to workspace root."
+      },
+      "agents": {
+        "type": "object",
+        "description": "Per-agent configuration. Use '*' as the key for default/wildcard config. Agent-specific keys override the wildcard.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "firstTurnFiles": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "List of filenames (in sharedDir) to inject on the first turn."
+            },
+            "injectRoutingIndex": {
+              "type": "boolean",
+              "description": "If true, inject the context routing index on the first turn."
+            },
+            "bootstrapKeep": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Filenames to keep in full during bootstrap."
+            },
+            "bootstrapCompact": {
+              "type": "object",
+              "description": "Map of filename to compact stub text. These files are replaced with a short summary during bootstrap.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "skipAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "List of agent IDs to skip entirely (no injection, no bootstrap filtering)."
+      },
+      "bootstrapDedup": {
+        "type": "boolean",
+        "description": "Enable same-name file deduplication during bootstrap. Defaults to true.",
+        "default": true
+      }
+    },
+    "additionalProperties": false
+  }
+}

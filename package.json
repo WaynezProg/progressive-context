@@ -1,0 +1,25 @@
+{
+  "name": "progressive-context",
+  "version": "2.0.0",
+  "description": "OpenClaw plugin: configuration-driven progressive context injection + workspace_context tool",
+  "type": "commonjs",
+  "main": "./index.js",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "context-injection",
+    "agents",
+    "progressive-context"
+  ],
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "openclaw": {
+    "extensions": ["./index.js"]
+  },
+  "scripts": {
+    "build": "npx esbuild index.ts --bundle --platform=node --format=cjs --outfile=index.js --external:fs --external:path"
+  }
+}
