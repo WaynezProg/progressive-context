@@ -76,13 +76,11 @@ function deprecationWarn(field, replacement) {
 function register(api) {
   const config = api.getConfig?.() ?? {};
   const workspaceRoot = api.getWorkspaceRoot?.() ?? process.cwd();
-  const hasLegacyConfig = config.sharedDir !== void 0 || config.globalFiles !== void 0 || config.agentFiles !== void 0 || config.compactReminder !== void 0 || config.compactReminderFile !== void 0 || config.contextRoutingIndex !== void 0 || config.contextRoutingIndexFile !== void 0;
+  const hasLegacyConfig = config.sharedDir !== void 0 || config.globalFiles !== void 0 || config.agentFiles !== void 0 || config.contextRoutingIndex !== void 0 || config.contextRoutingIndexFile !== void 0;
   if (hasLegacyConfig) {
     if (config.sharedDir !== void 0) deprecationWarn("sharedDir", "agents[*].workspaceRoot");
     if (config.globalFiles !== void 0) deprecationWarn("globalFiles", "sharedContexts");
     if (config.agentFiles !== void 0) deprecationWarn("agentFiles", "standardWorkspaceFiles + agents[].workspaceFiles");
-    if (config.compactReminder !== void 0) deprecationWarn("compactReminder", "sharedContexts[].compactText + dynamic generation");
-    if (config.compactReminderFile !== void 0) deprecationWarn("compactReminderFile", "sharedContexts[].compactText + dynamic generation");
     if (config.contextRoutingIndex !== void 0) deprecationWarn("contextRoutingIndex", "agents[].routeTable");
     if (config.contextRoutingIndexFile !== void 0) deprecationWarn("contextRoutingIndexFile", "agents[].routeTable");
   }
@@ -159,17 +157,6 @@ function register(api) {
       return null;
     }
     return p;
-  }
-  function getAgentWorkspaceFileKeys(agentId) {
-    const agentCfg = getAgentConfig(agentId);
-    return agentCfg?.workspaceFiles ?? Object.keys(stdFiles);
-  }
-  function getAgentSharedContextNames(agentId) {
-    const agentCfg = getAgentConfig(agentId);
-    const injected = agentCfg?.injectSharedOnFirstTurn ?? [];
-    const available = agentCfg?.availableSharedContexts ?? [];
-    const all = /* @__PURE__ */ new Set([...injected, ...available]);
-    return [...all];
   }
   function legacyResolveAgentFile(agentId, filename) {
     if (legacySharedDir) {
@@ -266,12 +253,22 @@ ${content}`);
   function buildCompactReminder(agentId) {
     const agentCfg = getAgentConfig(agentId);
     if (!agentCfg) return "";
+    let customReminder = "";
+    if (config.compactReminder) {
+      customReminder = config.compactReminder;
+    } else if (config.compactReminderFile) {
+      const filePath = (0, import_path.join)(workspaceRoot, config.compactReminderFile);
+      customReminder = readFileCached(filePath);
+    }
     const lines = [
       "## Progressive Context Reminder",
       "",
       "Full context was injected on the first turn. Use `workspace_context` to retrieve files on demand.",
       ""
     ];
+    if (customReminder) {
+      lines.push(customReminder, "");
+    }
     const wsKeys = agentCfg.workspaceFiles ?? [];
     if (wsKeys.length > 0) {
       lines.push("### Agent workspace files");
@@ -450,10 +447,19 @@ ${compactMap[name]}`,
         const agentId = toolCtx?.agentId ?? "unknown";
         let filePath = null;
         if (id.startsWith("workspace:")) {
-          const key = id.slice("workspace:".length);
+          const rest = id.slice("workspace:".length);
+          const hashIdx = rest.indexOf("#");
+          const key = hashIdx >= 0 ? rest.slice(0, hashIdx) : rest;
+          const hashSection = hashIdx >= 0 ? rest.slice(hashIdx + 1) : void 0;
           filePath = resolveWorkspaceFile(agentId, key);
           if (!filePath) {
             return { error: `Workspace file not found for slot '${key}' (agent: ${agentId})` };
+          }
+          if (hashSection && !section) {
+            const content2 = readFileCached(filePath);
+            const extracted = extractSection(content2, hashSection);
+            if (!extracted) return { error: `Section not found: "${hashSection}" in workspace:${key}` };
+            return { content: extracted };
           }
         } else if (id.startsWith("shared:")) {
           const name = id.slice("shared:".length);
@@ -513,4 +519,33 @@ ${compactMap[name]}`,
     const msg = e instanceof Error ? e.message : String(e);
     console.log("[progressive-context] registerTool not available:", msg);
   }
+  if (hasV3Config && config.agents) {
+    for (const [agentId, agentCfg] of Object.entries(config.agents)) {
+      if (agentCfg.workspaceFiles) {
+        for (const key of agentCfg.workspaceFiles) {
+          if (!(key in stdFiles) && !(agentCfg.extraWorkspaceFiles && key in agentCfg.extraWorkspaceFiles)) {
+            console.error(`[progressive-context] config error: agent "${agentId}" references unknown workspace file key "${key}". Valid: ${Object.keys(stdFiles).join(", ")}`);
+          }
+        }
+      }
+      for (const ctxId of agentCfg.injectSharedOnFirstTurn ?? []) {
+        if (!sharedContexts[ctxId]) {
+          console.error(`[progressive-context] config error: agent "${agentId}" references unknown shared context "${ctxId}" in injectSharedOnFirstTurn`);
+        }
+      }
+      for (const ctxId of agentCfg.availableSharedContexts ?? []) {
+        if (!sharedContexts[ctxId]) {
+          console.error(`[progressive-context] config error: agent "${agentId}" references unknown shared context "${ctxId}" in availableSharedContexts`);
+        }
+      }
+      if (agentCfg.routeTable) {
+        for (const [topic, target] of Object.entries(agentCfg.routeTable)) {
+          if (!target.startsWith("workspace:") && !target.startsWith("shared:")) {
+            warn(`route table: agent "${agentId}", topic "${topic}" target "${target}" \u2014 expected "workspace:" or "shared:" prefix`);
+          }
+        }
+      }
+    }
+  }
+  console.log(`[progressive-context] v3.0 registered (${hasV3Config ? "v3" : "legacy"}${hasLegacyConfig ? ", legacy compat active" : ""})`);
 }

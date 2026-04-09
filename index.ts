@@ -45,14 +45,14 @@ interface PluginConfig {
   standardWorkspaceFiles?: StandardWorkspaceFiles;
   sharedContexts?: Record<string, SharedContextConfig>;
   agents?: Record<string, AgentConfig>;
+  compactReminder?: string;
+  compactReminderFile?: string;
   skipAgents?: string[];
   bootstrapDedup?: boolean;
-  // v2 legacy fields
+  // v2 legacy fields (backward compat)
   sharedDir?: string;
   globalFiles?: Record<string, string>;
   agentFiles?: Record<string, string>;
-  compactReminder?: string;
-  compactReminderFile?: string;
   contextRoutingIndex?: string;
   contextRoutingIndexFile?: string;
 }
@@ -180,12 +180,11 @@ export default function register(api: OpenClawApi) {
   // -----------------------------------------------------------------------
   // Detect legacy config and log deprecation warnings
   // -----------------------------------------------------------------------
+  // Legacy-only fields (not part of v3 schema)
   const hasLegacyConfig =
     config.sharedDir !== undefined ||
     config.globalFiles !== undefined ||
     config.agentFiles !== undefined ||
-    config.compactReminder !== undefined ||
-    config.compactReminderFile !== undefined ||
     config.contextRoutingIndex !== undefined ||
     config.contextRoutingIndexFile !== undefined;
 
@@ -193,8 +192,6 @@ export default function register(api: OpenClawApi) {
     if (config.sharedDir !== undefined) deprecationWarn("sharedDir", "agents[*].workspaceRoot");
     if (config.globalFiles !== undefined) deprecationWarn("globalFiles", "sharedContexts");
     if (config.agentFiles !== undefined) deprecationWarn("agentFiles", "standardWorkspaceFiles + agents[].workspaceFiles");
-    if (config.compactReminder !== undefined) deprecationWarn("compactReminder", "sharedContexts[].compactText + dynamic generation");
-    if (config.compactReminderFile !== undefined) deprecationWarn("compactReminderFile", "sharedContexts[].compactText + dynamic generation");
     if (config.contextRoutingIndex !== undefined) deprecationWarn("contextRoutingIndex", "agents[].routeTable");
     if (config.contextRoutingIndexFile !== undefined) deprecationWarn("contextRoutingIndexFile", "agents[].routeTable");
   }
@@ -317,21 +314,6 @@ export default function register(api: OpenClawApi) {
     return p;
   }
 
-  /** Get all workspace file slot keys for an agent. */
-  function getAgentWorkspaceFileKeys(agentId: string): string[] {
-    const agentCfg = getAgentConfig(agentId);
-    return agentCfg?.workspaceFiles ?? Object.keys(stdFiles);
-  }
-
-  /** Get all shared context names available to an agent (injected + available). */
-  function getAgentSharedContextNames(agentId: string): string[] {
-    const agentCfg = getAgentConfig(agentId);
-    const injected = agentCfg?.injectSharedOnFirstTurn ?? [];
-    const available = agentCfg?.availableSharedContexts ?? [];
-    const all = new Set([...injected, ...available]);
-    return [...all];
-  }
-
   // -----------------------------------------------------------------------
   // Legacy helpers (only used when hasLegacyConfig && !hasV3Config)
   // -----------------------------------------------------------------------
@@ -451,12 +433,25 @@ export default function register(api: OpenClawApi) {
     const agentCfg = getAgentConfig(agentId);
     if (!agentCfg) return "";
 
+    // If compactReminder/compactReminderFile is set, prepend it
+    let customReminder = "";
+    if (config.compactReminder) {
+      customReminder = config.compactReminder;
+    } else if (config.compactReminderFile) {
+      const filePath = join(workspaceRoot, config.compactReminderFile);
+      customReminder = readFileCached(filePath);
+    }
+
     const lines: string[] = [
       "## Progressive Context Reminder",
       "",
       "Full context was injected on the first turn. Use `workspace_context` to retrieve files on demand.",
       "",
     ];
+
+    if (customReminder) {
+      lines.push(customReminder, "");
+    }
 
     // Workspace files
     const wsKeys = agentCfg.workspaceFiles ?? [];
@@ -678,10 +673,20 @@ export default function register(api: OpenClawApi) {
 
         // Parse namespace
         if (id.startsWith("workspace:")) {
-          const key = id.slice("workspace:".length);
+          const rest = id.slice("workspace:".length);
+          // Support section in target: "workspace:soul#Speaking Style"
+          const hashIdx = rest.indexOf("#");
+          const key = hashIdx >= 0 ? rest.slice(0, hashIdx) : rest;
+          const hashSection = hashIdx >= 0 ? rest.slice(hashIdx + 1) : undefined;
           filePath = resolveWorkspaceFile(agentId, key);
           if (!filePath) {
             return { error: `Workspace file not found for slot '${key}' (agent: ${agentId})` };
+          }
+          if (hashSection && !section) {
+            const content = readFileCached(filePath);
+            const extracted = extractSection(content, hashSection);
+            if (!extracted) return { error: `Section not found: "${hashSection}" in workspace:${key}` };
+            return { content: extracted };
           }
         } else if (id.startsWith("shared:")) {
           const name = id.slice("shared:".length);
@@ -753,4 +758,41 @@ export default function register(api: OpenClawApi) {
     const msg = e instanceof Error ? e.message : String(e);
     console.log("[progressive-context] registerTool not available:", msg);
   }
+
+  // -----------------------------------------------------------------------
+  // Startup validation (spec section 12)
+  // -----------------------------------------------------------------------
+  if (hasV3Config && config.agents) {
+    for (const [agentId, agentCfg] of Object.entries(config.agents)) {
+      // Validate workspaceFiles keys exist in stdFiles or extraWorkspaceFiles
+      if (agentCfg.workspaceFiles) {
+        for (const key of agentCfg.workspaceFiles) {
+          if (!(key in stdFiles) && !(agentCfg.extraWorkspaceFiles && key in agentCfg.extraWorkspaceFiles)) {
+            console.error(`[progressive-context] config error: agent "${agentId}" references unknown workspace file key "${key}". Valid: ${Object.keys(stdFiles).join(", ")}`);
+          }
+        }
+      }
+      // Validate shared context references
+      for (const ctxId of agentCfg.injectSharedOnFirstTurn ?? []) {
+        if (!sharedContexts[ctxId]) {
+          console.error(`[progressive-context] config error: agent "${agentId}" references unknown shared context "${ctxId}" in injectSharedOnFirstTurn`);
+        }
+      }
+      for (const ctxId of agentCfg.availableSharedContexts ?? []) {
+        if (!sharedContexts[ctxId]) {
+          console.error(`[progressive-context] config error: agent "${agentId}" references unknown shared context "${ctxId}" in availableSharedContexts`);
+        }
+      }
+      // Validate route table targets
+      if (agentCfg.routeTable) {
+        for (const [topic, target] of Object.entries(agentCfg.routeTable)) {
+          if (!target.startsWith("workspace:") && !target.startsWith("shared:")) {
+            warn(`route table: agent "${agentId}", topic "${topic}" target "${target}" — expected "workspace:" or "shared:" prefix`);
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`[progressive-context] v3.0 registered (${hasV3Config ? "v3" : "legacy"}${hasLegacyConfig ? ", legacy compat active" : ""})`);
 }
