@@ -1,6 +1,6 @@
 {
   "name": "progressive-context",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "OpenClaw plugin: configuration-driven progressive context injection + workspace_context tool",
   "type": "commonjs",
   "main": "./index.js",
